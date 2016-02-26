@@ -90,7 +90,6 @@ class ConfigurationError(ValueError):
     pass
 
 
-
 class CellMLTranslator(object):
     """
     Base class for translators from CellML to programming languages.
@@ -1316,6 +1315,101 @@ class CellMLTranslator(object):
             self.writeln(row_type, '_lt_', idx, '_row = ', self.lookup_method_prefix, '_lookup_', idx,
                          '_row(', idx_var, self.lut_factor(idx, include_comma=True), ');')
 
+class CellMLToOdeintTranslator(CellMLTranslator):
+    """
+    As CellMLTranlator, but targets odeint
+    """
+
+    USES_SUBSIDIARY_FILE = True
+    TYPE_VECTOR = 'std::vector<double>'
+    TYPE_VECTOR_REF = 'std::vector<double>&'
+
+    def writeln_hpp(self, *args, **kwargs):
+        """Convenience wrapper for writing to the header file."""
+        kwargs['subsidiary'] = True
+        self.writeln(*args, **kwargs)
+
+    def output_top_boilerplate(self):
+        """Output top boilerplate.
+
+        This method outputs the constructor and destructor of the cell
+        class, and also lookup table declarations and lookup methods.
+        It also calls output_verify_state_variables.
+        """
+        self.writeln('#ifndef _', self.include_guard, '_')
+        self.writeln('#define _', self.include_guard, '_\n')
+        self.output_comment('Model: ', self.model.name)
+        self.output_comment(version_comment(self.add_timestamp))
+
+        self.writeln('#include <iostream>')
+        self.writeln('#include <boost/numeric/odeint.hpp>')
+        self.writeln('#include <thrust/device_vector.h>')
+        self.writeln('#include <boost/numeric/odeint/external/thrust/thrust.hpp>')
+        self.writeln('#include <math.h>\n')
+
+        self.writeln('using namespace std;');
+        self.writeln('using namespace boost::numeric::odeint;\n');
+
+        self.writeln('typedef thrust::host_vector<float> state_type\n')
+
+        self.writeln('struct output_observer {')
+        self.writeln('  float* cumulative_error_')
+        self.writeln('  output_observer(float *error) : cumulative_error_(error) { }')
+        self.writeln('  void operator()(const state_type xs, const float t) {')
+        self.writeln('    cout << xs[0] << "," << xs[1] << endl')
+        self.writeln('  }')
+        self.writeln('};')
+        return
+
+    def output_bottom_boilerplate(self):
+        """Output bottom boilerplate"""
+        self.writeln('\n')
+        self.writeln('#endif')
+        return
+
+    def output_mathematics(self):
+        """Output the mathematics in this model."""
+        self.writeln(self.COMMENT_START, 'Mathematics')
+        for expr in self.model.get_assignments():
+            # Check this expression is actually used; don't output if not
+            var = None
+            if isinstance(expr, mathml_apply) and expr.is_assignment():
+                var = expr.assigned_variable()
+            elif isinstance(expr, cellml_variable):
+                var = expr
+            if not (var and var.get_usage_count() == 0):
+                self.output_assignment(expr)
+        return
+
+    def output_assignment(self, expr):
+        """Output an assignment expression."""
+        if isinstance(expr, cellml_variable):
+            # This may be the assignment of a mapped variable, or a constant
+            t = expr.get_type()
+            if t == VarTypes.Mapped:
+                self.writeln(self.TYPE_CONST_DOUBLE, self.code_name(expr),
+                             self.EQ_ASSIGN,
+                             self.code_name(expr.get_source_variable()),
+                             self.STMT_END, nl=False)
+                self.output_comment(expr.units, indent=False, pad=True)
+            elif t == VarTypes.Constant:
+                self.writeln(self.TYPE_CONST_DOUBLE, self.code_name(expr),
+                             self.EQ_ASSIGN, nl=False)
+                self.output_number(expr.initial_value)
+                self.writeln(self.STMT_END, indent=False, nl=False)
+                self.output_comment(expr.units, indent=False, pad=True)
+        else:
+            # This is a mathematical expression
+            self.writeln(self.TYPE_CONST_DOUBLE, nl=False)
+            opers = expr.operands()
+            self.output_lhs(opers.next())
+            self.write(self.EQ_ASSIGN)
+            self.output_expr(opers.next(), False)
+            self.writeln(self.STMT_END, indent=False, nl=False)
+            #1365: add a comment with the LHS units
+            self.output_comment(expr._get_element_units(expr.eq.lhs, return_set=False).description(),
+                                indent=False, pad=True)
+
 class CellMLToChasteTranslator(CellMLTranslator):
     """
     As CellMLTranslator, but targets more recent Chaste style.
@@ -1331,7 +1425,7 @@ class CellMLToChasteTranslator(CellMLTranslator):
     # Type of (a reference to) the state variable vector
     TYPE_VECTOR = 'std::vector<double> '
     TYPE_VECTOR_REF = 'std::vector<double>& '
-    
+
     def writeln_hpp(self, *args, **kwargs):
         """Convenience wrapper for writing to the header file."""
         kwargs['subsidiary'] = True
