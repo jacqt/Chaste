@@ -1336,6 +1336,7 @@ class CellMLToOdeintTranslator(CellMLTranslator):
         class, and also lookup table declarations and lookup methods.
         It also calls output_verify_state_variables.
         """
+
         self.writeln('#ifndef _', self.include_guard, '_')
         self.writeln('#define _', self.include_guard, '_\n')
         self.output_comment('Model: ', self.model.name)
@@ -1359,18 +1360,55 @@ class CellMLToOdeintTranslator(CellMLTranslator):
         self.writeln('    cout << xs[0] << "," << xs[1] << endl')
         self.writeln('  }')
         self.writeln('};')
+
+        self.writeln('void EvaluateYDerivatives (')
+        self.writeln('        const state_type &rY,')
+        self.writeln('        state_type &rDY,')
+        self.writeln('        double ', self.code_name(self.free_vars[0]), ')')
+        self.open_block()
+        self.writeln('// Inputs:')
+        self.writeln('// Time units: ', self.free_vars[0].units)
+        for i, var in enumerate(self.state_vars):
+            self.writeln('double ', self.code_name(var),
+                         ' = rY[', str(i), '];')
+            self.writeln('// Units: ', var.units, '; Initial value: ',
+                         getattr(var, u'initial_value', 'Unknown'))
+        self.writeln()
+        if self.use_lookup_tables:
+            self.output_table_index_generation()
+        return
         return
 
     def output_bottom_boilerplate(self):
         """Output bottom boilerplate"""
+        num_variables = 2
+
+        self.close_block();
         self.writeln('\n')
         self.writeln('#endif')
+
+
+        self.writeln("int main()");
+        self.open_block();
+        self.writeln("state_type ys(" + str(num_variables) + ");")
+        for i in range(num_variables):
+            self.writeln("ys[" + str(i) + "] = 0.0;")
+
+        self.writeln("float error = 0.0;")
+        self.writeln("output_observer observer = output_observer(&error);")
+        self.writeln("integrate_const(runge_kutta4< state_type >(), ")
+        self.writeln("                EvaluateYDerivatives,")
+        self.writeln("                ys, 1.0, 20.0, 0.1,")
+        self.writeln("                observer);")
+
+        self.close_block();
         return
 
     def output_mathematics(self):
         """Output the mathematics in this model."""
         self.writeln(self.COMMENT_START, 'Mathematics')
         for expr in self.model.get_assignments():
+            print expr
             # Check this expression is actually used; don't output if not
             var = None
             if isinstance(expr, mathml_apply) and expr.is_assignment():
@@ -1379,6 +1417,13 @@ class CellMLToOdeintTranslator(CellMLTranslator):
                 var = expr
             if not (var and var.get_usage_count() == 0):
                 self.output_assignment(expr)
+        # now return them
+        print self.model.get_assignments();
+        print self.model
+        for i, var in enumerate(self.state_vars):
+            print i, var
+            self.writeln('rDY[', i, '] = ', self.code_name(var) , ';');
+
         return
 
     def output_assignment(self, expr):
@@ -5240,6 +5285,7 @@ CellMLTranslator.register(CellMLToMatlabTranslator, 'Matlab')
 CellMLTranslator.register(CellMLToHaskellTranslator, 'Haskell')
 CellMLTranslator.register(CellMLToPythonTranslator, 'Python')
 CellMLTranslator.register(CellMLToCythonTranslator, 'Cython')
+CellMLTranslator.register(CellMLToOdeintTranslator, 'Odeint')
 
 
 
