@@ -1351,13 +1351,16 @@ class CellMLToOdeintTranslator(CellMLTranslator):
         self.writeln('using namespace std;');
         self.writeln('using namespace boost::numeric::odeint;\n');
 
-        self.writeln('typedef thrust::host_vector<float> state_type\n')
+        self.writeln('typedef thrust::host_vector<float> state_type;\n')
 
         self.writeln('struct output_observer {')
-        self.writeln('  float* cumulative_error_')
+        self.writeln('  float* cumulative_error_;')
         self.writeln('  output_observer(float *error) : cumulative_error_(error) { }')
         self.writeln('  void operator()(const state_type xs, const float t) {')
-        self.writeln('    cout << xs[0] << "," << xs[1] << endl')
+        self.writeln('    cout << t << ",";')
+        for i in range(len(self.state_vars)):
+            self.writeln('    cout << xs[', i, '] << ",";')
+        self.writeln('    cout << endl;');
         self.writeln('  }')
         self.writeln('};')
 
@@ -1375,33 +1378,50 @@ class CellMLToOdeintTranslator(CellMLTranslator):
                          getattr(var, u'initial_value', 'Unknown'))
         self.writeln()
         if self.use_lookup_tables:
-            self.output_table_index_generation()
+            pass
+            #self.output_table_index_generation()
         return
         return
 
     def output_bottom_boilerplate(self):
         """Output bottom boilerplate"""
-        num_variables = 2
+        num_variables = len(self.state_vars)
 
         self.close_block();
-        self.writeln('\n')
-        self.writeln('#endif')
-
 
         self.writeln("int main()");
         self.open_block();
+        self.writeln('cout << "t" << ",";')
+        for var in self.state_vars:
+            self.writeln('cout << "', self.var_display_name(var) ,'"  << ",";')
+        self.writeln('cout << endl;')
+
         self.writeln("state_type ys(" + str(num_variables) + ");")
-        for i in range(num_variables):
-            self.writeln("ys[" + str(i) + "] = 0.0;")
+
+        def output_var(vector, var):
+            self.output_comment(vector, ' ', self.var_display_name(var))
+
+        for i, var in enumerate(self.state_vars):
+            output_var('Variable', var)
+            init_val = getattr(var, u'initial_value', None)
+            if init_val is None:
+                init_comm = ' // Value not given in model'
+                # Don't want compiler error, but shouldn't be a real number
+                init_val = self.NOT_A_NUMBER
+            else:
+                init_comm = ''
+            self.writeln('ys[', i,'] = ', init_val, ';', init_comm, '\n')
 
         self.writeln("float error = 0.0;")
         self.writeln("output_observer observer = output_observer(&error);")
         self.writeln("integrate_const(runge_kutta4< state_type >(), ")
         self.writeln("                EvaluateYDerivatives,")
-        self.writeln("                ys, 1.0, 20.0, 0.1,")
+        self.writeln("                ys, 0.0, 10.0, 0.01,")
         self.writeln("                observer);")
 
         self.close_block();
+        self.writeln('\n')
+        self.writeln('#endif')
         return
 
     def output_mathematics(self):
@@ -1422,7 +1442,7 @@ class CellMLToOdeintTranslator(CellMLTranslator):
         print self.model
         for i, var in enumerate(self.state_vars):
             print i, var
-            self.writeln('rDY[', i, '] = ', self.code_name(var) , ';');
+            self.writeln('rDY[', i, '] = ', self.code_name(var, True) , ';');
 
         return
 
