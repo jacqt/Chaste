@@ -859,10 +859,13 @@ class CellMLTranslator(object):
         """Open a new code block and increase indent."""
         self.writeln('{', **kwargs)
         self.set_indent(offset=1)
-    def close_block(self, blank_line=True, **kwargs):
+    def close_block(self, blank_line=True, semi_colon=False, **kwargs):
         """Close a code block and decrease indent."""
         self.set_indent(offset=-1)
-        self.writeln('}', **kwargs)
+        if semi_colon:
+          self.writeln('};', **kwargs)
+        else:
+          self.writeln('}', **kwargs)
         if blank_line:
             self.writeln(**kwargs)
         return
@@ -1323,6 +1326,7 @@ class CellMLToOdeintTranslator(CellMLTranslator):
     USES_SUBSIDIARY_FILE = True
     TYPE_VECTOR = 'std::vector<double>'
     TYPE_VECTOR_REF = 'std::vector<double>&'
+    INSTANCES = 100;
 
     def writeln_hpp(self, *args, **kwargs):
         """Convenience wrapper for writing to the header file."""
@@ -1343,60 +1347,102 @@ class CellMLToOdeintTranslator(CellMLTranslator):
         self.output_comment(version_comment(self.add_timestamp))
 
         self.writeln('#include <iostream>')
-        self.writeln('#include <boost/numeric/odeint.hpp>')
+        self.writeln('#include <cmath>')
+        self.writeln('#include <utility>')
+
         self.writeln('#include <thrust/device_vector.h>')
+        self.writeln('#include <thrust/reduce.h>')
+        self.writeln('#include <thrust/functional.h>')
+        self.writeln('#include <thrust/iterator/constant_iterator.h>')
+
+        self.writeln('#include <boost/numeric/odeint.hpp>')
         self.writeln('#include <boost/numeric/odeint/external/thrust/thrust.hpp>')
-        self.writeln('#include <math.h>\n')
 
         self.writeln('using namespace std;');
         self.writeln('using namespace boost::numeric::odeint;\n');
 
+        # Set the value_type here.
+        self.writeln('typedef double value_type;\n')
+        # Set the device vs host vector here
         self.writeln('typedef thrust::host_vector<float> state_type;\n')
 
         self.writeln('struct output_observer {')
-        self.writeln('  float* cumulative_error_;')
-        self.writeln('  output_observer(float *error) : cumulative_error_(error) { }')
-        self.writeln('  void operator()(const state_type xs, const float t) {')
+        self.writeln('  value_type* cumulative_error_;')
+        self.writeln('  output_observer(value_type *error) : cumulative_error_(error) { }')
+        self.writeln('  void operator()(const state_type xs, const value_type t) {')
         self.writeln('    cout << t << ",";')
-        for i in range(len(self.state_vars)):
-            self.writeln('    cout << xs[', i, '] << ",";')
+        self.writeln('    for ( int i = 0 ; i < xs.size(); i++) {')
+        self.writeln('        cout << xs[i] << ",";')
+        self.writeln('    }')
         self.writeln('    cout << endl;');
         self.writeln('  }')
         self.writeln('};')
 
-        self.writeln('void EvaluateYDerivatives (')
-        self.writeln('        const state_type &rY,')
-        self.writeln('        state_type &rDY,')
-        self.writeln('        double ', self.code_name(self.free_vars[0]), ')')
-        self.open_block()
-        self.writeln('// Inputs:')
+        self.writeln();
+
+        self.writeln('struct ode_system');
+        self.open_block();
+        self.writeln('struct ode_functor');
+        self.open_block();
+        self.writeln('template< class T >');
+        self.writeln('__host__ __device__');
+        self.writeln('void operator() ( T t ) const');
+        self.open_block();
         self.writeln('// Time units: ', self.free_vars[0].units)
+        self.writeln('value_type  ', self.code_name(self.free_vars[0]), ' = thrust::get< 0 > ( t );')
+
+        self.writeln('// Inputs:')
         for i, var in enumerate(self.state_vars):
-            self.writeln('double ', self.code_name(var),
-                         ' = rY[', str(i), '];')
-            self.writeln('// Units: ', var.units, '; Initial value: ',
-                         getattr(var, u'initial_value', 'Unknown'))
-        self.writeln()
-        if self.use_lookup_tables:
-            pass
-            #self.output_table_index_generation()
-        return
+            self.writeln('// Units: ', var.units, '; Initial value: ', getattr(var, u'initial_value', 'Unknown'))
+            self.writeln('const value_type ', self.code_name(var), ' = thrust::get< ', i + 1, ' > ( t );')
         return
 
     def output_bottom_boilerplate(self):
         """Output bottom boilerplate"""
         num_variables = len(self.state_vars)
 
-        self.close_block();
+        self.close_block(False);
+        self.close_block(True, True); # Close ode_functor struct
+
+        self.writeln('size_t m_N;')
+        self.writeln('ode_system(size_t  N) : m_N( N ) { }')
+        self.writeln('template< class State, class Deriv >')
+        self.writeln('void operator() ( const State &ys, Deriv &dydts, value_type t) const')
+        self.open_block()
+        self.writeln('thrust::constant_iterator< value_type > t_iterator(t);')
+        self.writeln('thrust::for_each(')
+        self.writeln('    thrust::make_zip_iterator(thrust::make_tuple(')
+        self.writeln('        t_iterator,')
+        for i in range(num_variables):
+            self.writeln('        boost::begin(ys) + ', i, ' * m_N,')
+        for i in range(num_variables):
+            if i != num_variables - 1:
+              self.writeln('        boost::begin(dydts) + ', i, ' * m_N,')
+            else:
+              self.writeln('        boost::begin(dydts) + ', i, ' * m_N)),')
+        self.writeln('    thrust::make_zip_iterator(thrust::make_tuple(')
+        self.writeln('        t_iterator + m_N,')
+        for i in range(num_variables):
+            self.writeln('        boost::begin(ys) + ', i + 1, ' * m_N,')
+        for i in range(num_variables):
+            if i != num_variables - 1:
+              self.writeln('        boost::begin(dydts) + ', i + 1, ' * m_N,')
+            else:
+              self.writeln('        boost::begin(dydts) + ', i + 1, ' * m_N)),')
+        self.writeln('    ode_functor());')
+        self.close_block(False);
+        self.close_block(True, True);
 
         self.writeln("int main()");
         self.open_block();
+        self.writeln('const size_t N = ', self.INSTANCES, ';')
         self.writeln('cout << "t" << ",";')
         for var in self.state_vars:
-            self.writeln('cout << "', self.var_display_name(var) ,'"  << ",";')
+            for i in range(self.INSTANCES):
+                self.writeln('cout << "', self.var_display_name(var), i ,'"  << ",";')
         self.writeln('cout << endl;')
 
-        self.writeln("state_type ys(" + str(num_variables) + ");")
+        self.writeln("state_type ys(", num_variables * self.INSTANCES, ");")
 
         def output_var(vector, var):
             self.output_comment(vector, ' ', self.var_display_name(var))
@@ -1410,13 +1456,18 @@ class CellMLToOdeintTranslator(CellMLTranslator):
                 init_val = self.NOT_A_NUMBER
             else:
                 init_comm = ''
-            self.writeln('ys[', i,'] = ', init_val, ';', init_comm, '\n')
+            self.writeln('thrust::fill(ys.begin() + ', i, ' * N, ys.begin() + ', i + 1, ' * N, ', init_val, ');')
 
-        self.writeln("float error = 0.0;")
+        self.writeln();
+        self.writeln("value_type error = 0.0;")
         self.writeln("output_observer observer = output_observer(&error);")
+        self.writeln();
+        self.writeln("ode_system system = ode_system(N);")
+        self.writeln();
+
         self.writeln("integrate_const(runge_kutta4< state_type >(), ")
-        self.writeln("                EvaluateYDerivatives,")
-        self.writeln("                ys, 0.0, 10.0, 0.01,")
+        self.writeln("                system,")
+        self.writeln("                ys, 0.0, 50.0, 0.01,")
         self.writeln("                observer);")
 
         self.close_block();
@@ -1438,11 +1489,9 @@ class CellMLToOdeintTranslator(CellMLTranslator):
             if not (var and var.get_usage_count() == 0):
                 self.output_assignment(expr)
         # now return them
-        print self.model.get_assignments();
-        print self.model
+        offset = len(self.state_vars) + 1;
         for i, var in enumerate(self.state_vars):
-            print i, var
-            self.writeln('rDY[', i, '] = ', self.code_name(var, True) , ';');
+            self.writeln('thrust::get< ', i + offset, ' > ( t )  = ', self.code_name(var, True) , ';');
 
         return
 
@@ -1452,20 +1501,20 @@ class CellMLToOdeintTranslator(CellMLTranslator):
             # This may be the assignment of a mapped variable, or a constant
             t = expr.get_type()
             if t == VarTypes.Mapped:
-                self.writeln(self.TYPE_CONST_DOUBLE, self.code_name(expr),
+                self.writeln('const value_type ', self.code_name(expr),
                              self.EQ_ASSIGN,
                              self.code_name(expr.get_source_variable()),
                              self.STMT_END, nl=False)
                 self.output_comment(expr.units, indent=False, pad=True)
             elif t == VarTypes.Constant:
-                self.writeln(self.TYPE_CONST_DOUBLE, self.code_name(expr),
+                self.writeln('const value_type ',  self.code_name(expr),
                              self.EQ_ASSIGN, nl=False)
                 self.output_number(expr.initial_value)
                 self.writeln(self.STMT_END, indent=False, nl=False)
                 self.output_comment(expr.units, indent=False, pad=True)
         else:
             # This is a mathematical expression
-            self.writeln(self.TYPE_CONST_DOUBLE, nl=False)
+            self.writeln('const value_type ', nl=False)
             opers = expr.operands()
             self.output_lhs(opers.next())
             self.write(self.EQ_ASSIGN)
