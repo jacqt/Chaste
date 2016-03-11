@@ -1326,7 +1326,7 @@ class CellMLToOdeintTranslator(CellMLTranslator):
     USES_SUBSIDIARY_FILE = True
     TYPE_VECTOR = 'std::vector<double>'
     TYPE_VECTOR_REF = 'std::vector<double>&'
-    INSTANCES = 100;
+    INSTANCES = 1;
 
     def writeln_hpp(self, *args, **kwargs):
         """Convenience wrapper for writing to the header file."""
@@ -1389,13 +1389,64 @@ class CellMLToOdeintTranslator(CellMLTranslator):
         self.writeln('void operator() ( T t ) const');
         self.open_block();
         self.writeln('// Time units: ', self.free_vars[0].units)
-        self.writeln('value_type  ', self.code_name(self.free_vars[0]), ' = thrust::get< 0 > ( t );')
+        self.writeln('value_type  ', self.code_name(self.free_vars[0]), ' = ', self.variable_address('ys', 0), ';')
 
         self.writeln('// Inputs:')
         for i, var in enumerate(self.state_vars):
             self.writeln('// Units: ', var.units, '; Initial value: ', getattr(var, u'initial_value', 'Unknown'))
-            self.writeln('const value_type ', self.code_name(var), ' = thrust::get< ', i + 1, ' > ( t );')
+            self.writeln('const value_type ', self.code_name(var), ' = ', self.variable_address('ys', i + 1) ,';')
         return
+
+    def variable_address(self, t, index):
+        num_variables = (len(self.state_vars) + 1) # plus one for the time
+        path = list(reversed(self.variable_address_helper(index, 0, num_variables)))
+        if t == 'ys':
+            path.append(0)
+        else:
+            path.append(1)
+        return self.convert_path_to_address(path)
+
+
+    def variable_address_helper(self, index, begin, end):
+        if end - begin >= 10:
+            mid = int((end + begin) / 2)
+            if index >= mid:
+                a = [1]
+                a.extend(self.variable_address_helper(index, mid, end))
+            else:
+                a = [0]
+                a.extend(self.variable_address_helper(index, begin, mid))
+            return a
+        else:
+            return [index - begin]
+
+    def convert_path_to_address(self, path):
+        if len(path) == 1:
+            return 'thrust::get< ' + str(path[0]) + ' > ( t )'
+        else:
+            return 'thrust::get< ' + str(path[0]) + ' > ( ' + self.convert_path_to_address(path[1:]) + ')'
+
+
+
+
+    def tupleify(self, var, begin, end, offset=0):
+      self.writeln('    thrust::make_zip_iterator(thrust::make_tuple(')
+      if (end - begin) >= 10:
+        self.set_indent(offset=1)
+        mid = int((end + begin) / 2)
+        self.tupleify(var, begin, mid)
+        self.writeln('    ,');
+        self.tupleify(var, mid, end)
+        self.writeln('))');
+        self.set_indent(offset=-1)
+      else:
+        for i in range(begin, end):
+            if i == 0:
+                self.writeln('        t_iterator + ', offset ,' * m_N,')
+            elif i != end - 1:
+                self.writeln('        boost::begin(', var, ') + ', i + offset - 1, ' * m_N,')
+            else:
+                self.writeln('        boost::begin(', var, ') + ', i + offset - 1, ' * m_N))')
 
     def output_bottom_boilerplate(self):
         """Output bottom boilerplate"""
@@ -1411,25 +1462,21 @@ class CellMLToOdeintTranslator(CellMLTranslator):
         self.open_block()
         self.writeln('thrust::constant_iterator< value_type > t_iterator(t);')
         self.writeln('thrust::for_each(')
-        self.writeln('    thrust::make_zip_iterator(thrust::make_tuple(')
-        self.writeln('        t_iterator,')
-        for i in range(num_variables):
-            self.writeln('        boost::begin(ys) + ', i, ' * m_N,')
-        for i in range(num_variables):
-            if i != num_variables - 1:
-              self.writeln('        boost::begin(dydts) + ', i, ' * m_N,')
-            else:
-              self.writeln('        boost::begin(dydts) + ', i, ' * m_N)),')
-        self.writeln('    thrust::make_zip_iterator(thrust::make_tuple(')
-        self.writeln('        t_iterator + m_N,')
-        for i in range(num_variables):
-            self.writeln('        boost::begin(ys) + ', i + 1, ' * m_N,')
-        for i in range(num_variables):
-            if i != num_variables - 1:
-              self.writeln('        boost::begin(dydts) + ', i + 1, ' * m_N,')
-            else:
-              self.writeln('        boost::begin(dydts) + ', i + 1, ' * m_N)),')
-        self.writeln('    ode_functor());')
+        self.set_indent(offset=1)
+
+        self.writeln('thrust::make_zip_iterator(thrust::make_tuple(')
+        self.tupleify('ys', 0, num_variables + 1)
+        self.writeln('    ,');
+        self.tupleify('dydts', 0, num_variables + 1)
+        self.writeln(')),');
+
+        self.writeln('thrust::make_zip_iterator(thrust::make_tuple(')
+        self.tupleify('ys', 0, num_variables + 1, offset=1)
+        self.writeln('    ,');
+        self.tupleify('dydts', 0, num_variables + 1, offset=1)
+        self.writeln(')),');
+
+        self.writeln('ode_functor());')
         self.close_block(False);
         self.close_block(True, True);
 
@@ -1465,9 +1512,14 @@ class CellMLToOdeintTranslator(CellMLTranslator):
         self.writeln("ode_system system = ode_system(N);")
         self.writeln();
 
-        self.writeln("integrate_const(runge_kutta4< state_type >(), ")
+        # self.writeln("integrate_const(runge_kutta4< state_type >(), ")
+        # self.writeln("                system,")
+        # self.writeln("                ys, 0.0, 500.0, 0.001,")
+        # self.writeln("                observer);")
+        self.writeln("typedef runge_kutta_dopri5< state_type , value_type , state_type , value_type > stepper_type;");
+        self.writeln("integrate_adaptive(make_controlled(1E-12, 1E-12, stepper_type()),")
         self.writeln("                system,")
-        self.writeln("                ys, 0.0, 50.0, 0.01,")
+        self.writeln("                ys, 0.0, 1000.0, 0.01,")
         self.writeln("                observer);")
 
         self.close_block();
@@ -1489,9 +1541,8 @@ class CellMLToOdeintTranslator(CellMLTranslator):
             if not (var and var.get_usage_count() == 0):
                 self.output_assignment(expr)
         # now return them
-        offset = len(self.state_vars) + 1;
         for i, var in enumerate(self.state_vars):
-            self.writeln('thrust::get< ', i + offset, ' > ( t )  = ', self.code_name(var, True) , ';');
+            self.writeln(self.variable_address('dydts', i + 1), ' = ', self.code_name(var, True) , ';');
 
         return
 
