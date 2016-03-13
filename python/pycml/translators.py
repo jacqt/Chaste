@@ -1326,7 +1326,8 @@ class CellMLToOdeintTranslator(CellMLTranslator):
     USES_SUBSIDIARY_FILE = True
     TYPE_VECTOR = 'std::vector<double>'
     TYPE_VECTOR_REF = 'std::vector<double>&'
-    INSTANCES = 1;
+    INSTANCES = 4;
+    USE_DEVICE = True
 
     def writeln_hpp(self, *args, **kwargs):
         """Convenience wrapper for writing to the header file."""
@@ -1364,7 +1365,10 @@ class CellMLToOdeintTranslator(CellMLTranslator):
         # Set the value_type here.
         self.writeln('typedef double value_type;\n')
         # Set the device vs host vector here
-        self.writeln('typedef thrust::host_vector<float> state_type;\n')
+        if self.USE_DEVICE:
+          self.writeln('typedef thrust::device_vector<float> state_type;\n')
+        else:
+          self.writeln('typedef thrust::host_vector<float> state_type;\n')
 
         self.writeln('struct output_observer {')
         self.writeln('  value_type* cumulative_error_;')
@@ -1434,9 +1438,9 @@ class CellMLToOdeintTranslator(CellMLTranslator):
       if (end - begin) >= 10:
         self.set_indent(offset=1)
         mid = int((end + begin) / 2)
-        self.tupleify(var, begin, mid)
+        self.tupleify(var, begin, mid, offset=offset)
         self.writeln('    ,');
-        self.tupleify(var, mid, end)
+        self.tupleify(var, mid, end, offset=offset)
         self.writeln('))');
         self.set_indent(offset=-1)
       else:
@@ -1512,15 +1516,15 @@ class CellMLToOdeintTranslator(CellMLTranslator):
         self.writeln("ode_system system = ode_system(N);")
         self.writeln();
 
-        # self.writeln("integrate_const(runge_kutta4< state_type >(), ")
-        # self.writeln("                system,")
-        # self.writeln("                ys, 0.0, 500.0, 0.001,")
-        # self.writeln("                observer);")
-        self.writeln("typedef runge_kutta_dopri5< state_type , value_type , state_type , value_type > stepper_type;");
-        self.writeln("integrate_adaptive(make_controlled(1E-12, 1E-12, stepper_type()),")
+        self.writeln("integrate_const(runge_kutta4< state_type >(),")
         self.writeln("                system,")
-        self.writeln("                ys, 0.0, 1000.0, 0.01,")
+        self.writeln("                ys, 0.0, 500.0, 0.01,")
         self.writeln("                observer);")
+        # self.writeln("typedef runge_kutta_dopri5< state_type , value_type , state_type , value_type > stepper_type;");
+        # self.writeln("integrate_adaptive(make_controlled(1E-12, 1E-12, stepper_type()),")
+        # self.writeln("                system,")
+        # self.writeln("                ys, 0.0, 1000.0, 0.01,")
+        # self.writeln("                observer);")
 
         self.close_block();
         self.writeln('\n')
