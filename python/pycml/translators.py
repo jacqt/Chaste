@@ -1326,7 +1326,7 @@ class CellMLToOdeintTranslator(CellMLTranslator):
     USES_SUBSIDIARY_FILE = True
     TYPE_VECTOR = 'std::vector<double>'
     TYPE_VECTOR_REF = 'std::vector<double>&'
-    INSTANCES = 4;
+    INSTANCES = 1;
     USE_DEVICE = True
 
     def writeln_hpp(self, *args, **kwargs):
@@ -1370,17 +1370,21 @@ class CellMLToOdeintTranslator(CellMLTranslator):
         else:
           self.writeln('typedef thrust::host_vector<float> state_type;\n')
 
-        self.writeln('struct output_observer {')
-        self.writeln('  value_type* cumulative_error_;')
-        self.writeln('  output_observer(value_type *error) : cumulative_error_(error) { }')
-        self.writeln('  void operator()(const state_type xs, const value_type t) {')
-        self.writeln('    cout << t << ",";')
-        self.writeln('    for ( int i = 0 ; i < xs.size(); i++) {')
-        self.writeln('        cout << xs[i] << ",";')
-        self.writeln('    }')
-        self.writeln('    cout << endl;');
-        self.writeln('  }')
-        self.writeln('};')
+        self.writeln('struct output_observer')
+        self.open_block();
+        self.writeln('value_type* cumulative_error_;')
+        self.writeln('int counter_;')
+        self.writeln('output_observer(value_type *error) : cumulative_error_(error), counter_(0) { }')
+        self.writeln('void operator()(const state_type xs, const value_type t)')
+        self.open_block();
+        self.writeln('if (counter_++ % 1000 != 0) return;')
+        self.writeln('cout << t << ",";')
+        self.writeln('for ( int i = 0 ; i < xs.size(); i++) {')
+        self.writeln('    cout << xs[i] << ",";')
+        self.writeln('}')
+        self.writeln('cout << endl;');
+        self.close_block(False)
+        self.close_block(True, True) # output_observer struct
 
         self.writeln();
 
@@ -1481,6 +1485,7 @@ class CellMLToOdeintTranslator(CellMLTranslator):
         self.writeln(')),');
 
         self.writeln('ode_functor());')
+        self.set_indent(offset=-1)
         self.close_block(False);
         self.close_block(True, True);
 
@@ -1523,7 +1528,7 @@ class CellMLToOdeintTranslator(CellMLTranslator):
         # self.writeln("typedef runge_kutta_dopri5< state_type , value_type , state_type , value_type > stepper_type;");
         # self.writeln("integrate_adaptive(make_controlled(1E-12, 1E-12, stepper_type()),")
         # self.writeln("                system,")
-        # self.writeln("                ys, 0.0, 1000.0, 0.01,")
+        # self.writeln("                ys, 0.0, 500.0, 0.01,")
         # self.writeln("                observer);")
 
         self.close_block();
