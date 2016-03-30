@@ -1326,8 +1326,12 @@ class CellMLToOdeintTranslator(CellMLTranslator):
     USES_SUBSIDIARY_FILE = True
     TYPE_VECTOR = 'std::vector<double>'
     TYPE_VECTOR_REF = 'std::vector<double>&'
-    INSTANCES = 1;
+    INSTANCES = 16;
     USE_DEVICE = True
+    PARAMETER_STUDY = True
+    PARAMETER_NAME = "var_IKr__g_Kr_max"
+    PARAMETER_MIN = 0.0;
+    PARAMETER_MAX = 0.014999999999999999;
 
     def writeln_hpp(self, *args, **kwargs):
         """Convenience wrapper for writing to the header file."""
@@ -1464,7 +1468,12 @@ class CellMLToOdeintTranslator(CellMLTranslator):
         self.close_block(True, True); # Close ode_functor struct
 
         self.writeln('size_t m_N;')
-        self.writeln('ode_system(size_t  N) : m_N( N ) { }')
+        if self.PARAMETER_STUDY:
+          self.writeln('const state_type &m_param;')
+          self.writeln('ode_system(size_t  N, const state_type &param) : m_N( N ) , m_param ( param ) { }')
+        else:
+          self.writeln('ode_system(size_t  N) : m_N( N ) { }')
+
         self.writeln('template< class State, class Deriv >')
         self.writeln('void operator() ( const State &ys, Deriv &dydts, value_type t) const')
         self.open_block()
@@ -1476,12 +1485,18 @@ class CellMLToOdeintTranslator(CellMLTranslator):
         self.tupleify('ys', 0, num_variables + 1)
         self.writeln('    ,');
         self.tupleify('dydts', 0, num_variables + 1)
+        if self.PARAMETER_STUDY:
+          self.writeln('    ,');
+          self.writeln('    m_param.begin()');
         self.writeln(')),');
 
         self.writeln('thrust::make_zip_iterator(thrust::make_tuple(')
         self.tupleify('ys', 0, num_variables + 1, offset=1)
         self.writeln('    ,');
         self.tupleify('dydts', 0, num_variables + 1, offset=1)
+        if self.PARAMETER_STUDY:
+          self.writeln('    ,');
+          self.writeln('    m_param.begin()');
         self.writeln(')),');
 
         self.writeln('ode_functor());')
@@ -1518,12 +1533,22 @@ class CellMLToOdeintTranslator(CellMLTranslator):
         self.writeln("value_type error = 0.0;")
         self.writeln("output_observer observer = output_observer(&error);")
         self.writeln();
-        self.writeln("ode_system system = ode_system(N);")
+        if (self.PARAMETER_STUDY):
+            self.writeln("vector< value_type > param_host( N );")
+            self.writeln("const value_type param_min = 0.0;")
+            self.writeln("const value_type param_max = 0.014999999999999999;")
+            self.writeln("for (size_t i = 0; i < N; i++) {")
+            self.writeln("    param_host[i] = value_type( i ) * (param_max - param_min) / value_type ( N - 1 );")
+            self.writeln("}")
+            self.writeln("state_type param_device = param_host;")
+            self.writeln("ode_system system = ode_system(N, param_device);")
+        else:
+            self.writeln("ode_system system = ode_system(N);")
         self.writeln();
 
         self.writeln("integrate_const(runge_kutta4< state_type >(),")
         self.writeln("                system,")
-        self.writeln("                ys, 0.0, 500.0, 0.01,")
+        self.writeln("                ys, 0.0, 1000.0, 0.005,")
         self.writeln("                observer);")
         # self.writeln("typedef runge_kutta_dopri5< state_type , value_type , state_type , value_type > stepper_type;");
         # self.writeln("integrate_adaptive(make_controlled(1E-12, 1E-12, stepper_type()),")
@@ -1559,19 +1584,26 @@ class CellMLToOdeintTranslator(CellMLTranslator):
         """Output an assignment expression."""
         if isinstance(expr, cellml_variable):
             # This may be the assignment of a mapped variable, or a constant
-            t = expr.get_type()
-            if t == VarTypes.Mapped:
+            if self.PARAMETER_STUDY and self.code_name(expr) == self.PARAMETER_NAME:
                 self.writeln('const value_type ', self.code_name(expr),
                              self.EQ_ASSIGN,
-                             self.code_name(expr.get_source_variable()),
+                             'thrust::get < 2 > ( t )',
                              self.STMT_END, nl=False)
                 self.output_comment(expr.units, indent=False, pad=True)
-            elif t == VarTypes.Constant:
-                self.writeln('const value_type ',  self.code_name(expr),
-                             self.EQ_ASSIGN, nl=False)
-                self.output_number(expr.initial_value)
-                self.writeln(self.STMT_END, indent=False, nl=False)
-                self.output_comment(expr.units, indent=False, pad=True)
+            else:
+                t = expr.get_type()
+                if t == VarTypes.Mapped:
+                    self.writeln('const value_type ', self.code_name(expr),
+                                 self.EQ_ASSIGN,
+                                 self.code_name(expr.get_source_variable()),
+                                 self.STMT_END, nl=False)
+                    self.output_comment(expr.units, indent=False, pad=True)
+                elif t == VarTypes.Constant:
+                    self.writeln('const value_type ',  self.code_name(expr),
+                                 self.EQ_ASSIGN, nl=False)
+                    self.output_number(expr.initial_value)
+                    self.writeln(self.STMT_END, indent=False, nl=False)
+                    self.output_comment(expr.units, indent=False, pad=True)
         else:
             # This is a mathematical expression
             self.writeln('const value_type ', nl=False)
